@@ -23,7 +23,7 @@ zero:
 starterr:
 	xor	a
 error:
-	out	(01h), a
+	out	(01h), a	; port B = 00000000 / error code
 	xor	a, e
 	ld	bc, 0
 err1:
@@ -50,8 +50,8 @@ start:
 
 init_ppi:
 
-	ld	a, 0feh
-	out	(02h), a
+	ld	a, 0feh		;  
+	out	(02h), a        ; port C = 11111110
 
 	ld	a, 88h
 	out	(03h), a	; port C7:C4 - input, C3:C0 - output, A, B - output
@@ -75,7 +75,7 @@ init_sd_ret:
 	ret
 
 sd_reset:
-	ld	a, 00000101b	; CS = 1
+	ld	a, 00000101b	; CS (C2) = 1
 	out	(03h), a
 
 	ld	b, 10
@@ -91,13 +91,13 @@ sd_r2:
 	dec	b
 	jr	nz, sd_r2	; delay ~100ms	
 
-	ld	a, 00000100b	; CS = 0
+	ld	a, 00000100b	; CS (C2) = 0
 	out	(03h), a
 
 	ld	c, 0
-	ld	hl, 0
-	ld	de, 0
-	jr	sd_cmd
+;	ld	hl, 0
+;	ld	de, 0
+;	jr	sd_cmd
 
 sd_cmd_zarg:
 	ld	hl, 0
@@ -230,29 +230,28 @@ spi_wb:
 ;	A = byte read
 	push	bc
 	ld	b, 8
-	ld	c, a
 spiwb1:
-	bit	7, c
-	ld	a, 00000010b
-	jr	z, spiwb2
-	inc	a
+	add	a, a		; bit7 (current) -> carry
+	ld	c, a
+	
+	ld	a, 00000001b
+	adc	a, a		; a = 00000010 | (current bit)
 
 spiwb2:
-	out	(03h), a	; MOSI = current bit
+	out	(03h), a	; MOSI (C1) = current bit
 
-	ld	a, 00000001b	; CLK down
+	ld	a, 00000001b	; CLK up
 	out	(03h), a
 
-;	ld	a, 00000000b	; CLK up
-	dec	a
+	dec	a		; CLK down
 	out	(03h), a
 
-	in	a, (02h)
-	rla
-	rl	c
+	in	a, (02h)	; read MISO (C7)
+	add	a, a		; read bit -> carry
+	ld	a, c
+	adc	a, 0		; read bit -> A:0
 	djnz	spiwb1
 
-	ld	a, c
 	pop	bc
 	ret
 
@@ -468,6 +467,11 @@ sd_ver_2_0_2:
 	ld	a, (cardtype)
 	ret
 
+;	input:
+;	A = token, HL = address, BC = len
+;	output:
+;	ZF if CRC OK
+
 spirbwt:
 	call	sd_wt
 	push	bc
@@ -480,10 +484,8 @@ spirbwt:
 	call	crc7
 	add	a, a
 	inc	a
+	dec	hl
 	sub	a, (hl)
-	cp	a, 1
-	ccf
-	sbc	a, a
 	ret
 
 sd_info:
