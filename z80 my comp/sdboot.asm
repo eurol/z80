@@ -1,4 +1,4 @@
-cardtype	equ	0ff00h
+cardtype	equ	0f000h
 sdbuf		equ	cardtype + 1
 cmd9data	equ	sdbuf + 15
 cmd10data	equ	cmd9data + 16
@@ -10,6 +10,9 @@ ctMMC		equ	0
 ctSD1		equ	1
 ctSD2		equ	2
 ctSDH		equ	3
+ctSD1err	equ	(ctSD1 | 80h)
+ctSD2err	equ	(ctSD2 | 80h)
+ctSDHerr	equ	(ctSDH | 80h)
 
 zero:
 	di
@@ -35,7 +38,6 @@ err1:
 	jr	error
 
 start:
-	ld	sp, 0ff00h
 	call	init_ppi
 	call	init_sd
 	ld	e, 7
@@ -70,6 +72,10 @@ init_sd:
 	ldir
 
 	call	sd_ver
+
+	ld	a, (cardtype)
+	call	csflipflop
+
 	call	sd_info
 init_sd_ret:
 	ret
@@ -220,6 +226,7 @@ spi_rblock:
 	jr	nz, spi_rblock
 	ret
 
+
 spi_rb:
 	ld	a, 0ffh
 
@@ -263,7 +270,7 @@ sd_ver:
 
 ; if (t & 4)
 	and	a, 4
-	jr	z, sd_ver_2_0
+	jp	z, sd_ver_2_0
 
 ; { // v1.x SD or not SD
 ;  spirb_(0, 4);
@@ -290,13 +297,26 @@ sd_ver:
 ;     while (SD_acmd(41,0x00f80000) != 0)
 ;      {
 ;      }
+	ld	bc, 1000
 sd_ver1:
+	push	bc
 	ld	c, 41
 	ld	hl, 00f8h
 	ld	de, 0
 	call	sd_acmd
+	pop	bc
 	or	a, a
+	jr	z, sd_ver1_ok
+	dec	bc
+	ld	a, b
+	or	c
 	jr	nz, sd_ver1
+sd_ver1_err:
+	ld	a, ctSD1err
+	ld	(cardtype), a
+	ret
+
+sd_ver1_ok:
 		
 ;     getandprinthex(data, 4);
 	call	sd_r4b
@@ -304,6 +324,7 @@ sd_ver1:
 ;     if (SD_cmd(9,0) != 0)
 ;      {
 ;      }
+
 	ld	c, 9
 	call	sd_cmd_zarg
 
@@ -312,11 +333,29 @@ sd_ver1:
 	ld	hl, cmd9data
 	ld	bc, 16
 	call	spirbwt
-	ret	nz
+;	ret	nz
+	jr	z, trycmd10
+
+
+	ld	hl, cmd9data
+	ld	bc, 16
+	call	spi_wblock
+
+	ld	hl, cmd9data
+	ld	bc, 15
+	ld	a, 0
+	call	crc7
+	call	spi_wb
+
+	ret
 
 ;     if (SD_cmd(10,0) != 0)
 ;      {       
 ;      }
+
+trycmd10:
+
+
 	ld	c, 10
 	call	sd_cmd_zarg
 
@@ -325,8 +364,20 @@ sd_ver1:
 	ld	hl, cmd10data
 	ld	bc, 16
 	call	spirbwt
-	ret	nz
-     
+	jr	z, trycmd58
+
+	ld	hl, cmd10data
+	ld	bc, 16
+	call	spi_wblock
+
+	ld	hl, cmd10data
+	ld	bc, 15
+	ld	a, 0
+	call	crc7
+	call	spi_wb
+	ret
+
+trycmd58:     
 ;     if (SD_cmd(58,0) != 0)
 ;      {
 ;      }
@@ -396,17 +447,43 @@ sd_ver_2_0_1:
 ;    if (SD_cmd(9,0) != 0)
 ;     {
 ;     } 
+	ld	a, 4
+	call	csflipflop
+
 	ld	c, 9
 	call	sd_cmd_zarg
 
 ;    if (spirbwt(cmd9data, 16, 0xfe) == -1)
 ;    {
 ;    }
+	ld	a, 1
+	call	csflipflop
+
 	ld	a, 0feh
 	ld	hl, cmd9data
 	ld	bc, 16
 	call	spirbwt
-	ret	nz
+		
+	jr	z, sd_ver_2_0_1a
+
+	ld	a, 2
+	call	csflipflop
+
+	ld	hl, cmd9data
+	ld	bc, 16
+	call	spi_wblock
+
+	ld	hl, cmd9data
+	ld	bc, 15
+	ld	a, 0
+	call	crc7
+	call	spi_wb
+	ret
+
+sd_ver_2_0_1a:
+
+	ld	a, 3
+	call	csflipflop
 
 ;    spirb();spirb(); // SDXC card sends 2 bytes (CRC?)
 	call	spi_rb
@@ -425,8 +502,20 @@ sd_ver_2_0_1:
 	ld	hl, cmd10data
 	ld	bc, 16
 	call	spirbwt
-	ret	nz
-    
+	jr	z, sd_ver_2_0_1b
+
+	ld	hl, cmd10data
+	ld	bc, 16
+	call	spi_wblock
+
+	ld	hl, cmd10data
+	ld	bc, 15
+	ld	a, 0
+	call	crc7
+	call	spi_wb
+	ret
+
+sd_ver_2_0_1b:    
 ;    spirb();spirb(); // SDXC card sends 2 bytes (CRC?)
 	call	spi_rb
 	call	spi_rb
@@ -434,6 +523,9 @@ sd_ver_2_0_1:
 ;    if (SD_cmd(58,0) != 0)
 ;     {
 ;     }
+	ld	a, 6
+	call	csflipflop
+
 	ld	c, 58
 	call	sd_cmd_zarg
     
@@ -471,6 +563,7 @@ sd_ver_2_0_2:
 ;	A = token, HL = address, BC = len
 ;	output:
 ;	ZF if CRC OK
+;	BC = 0, HL = address + len - 1
 
 spirbwt:
 	call	sd_wt
@@ -484,7 +577,6 @@ spirbwt:
 	call	crc7
 	add	a, a
 	inc	a
-	dec	hl
 	sub	a, (hl)
 	ret
 
@@ -543,6 +635,68 @@ crc7_l1:
 inthandler:
 	ret
 
+csflipflop:
+	push	af
+	ld	a, 00000101b	; CS (C2) = 1
+	out	(03h), a
+	ld	a, 00000100b	; CS (C2) = 0
+	out	(03h), a
+	pop	af
+	dec	a
+	jr	nz, csflipflop
+	ret
+
 chkmem:
 	ld	ix, 0c000h
+	ld	sp, 0
+	call	init_ppi
+
+	ld	hl, 0c000h
+	ld	(hl), 0
+	ld	de, 0c001h
+	ld	bc, 3fffh
+	ldir
+
+	ld	hl, 0c000h
+	ld	bc, 4000h
+cmc1:
+	ld	a, (hl)
+	or	a
+	jr	z, cmc2
+	call	spi_wb
+	ld	a, h
+	call	spi_wb
+	ld	a, l
+	call	spi_wb
+
+cmc2:
+	dec	c
+	jr	nz, cmc1
+	dec	b
+	jr	nz, cmc1
+
+	ld	hl, 0c000h
+	ld	(hl), 0ffh
+	ld	de, 0c001h
+	ld	bc, 3fffh
+	ldir
+
+	ld	hl, 0c000h
+	ld	bc, 4000h
+cmc3:
+	ld	a, (hl)
+	cp	a, 0ffh
+	jr	z, cmc4
+	call	spi_wb
+	ld	a, h
+	call	spi_wb
+	ld	a, l
+	call	spi_wb
+
+cmc4:
+	dec	c
+	jr	nz, cmc3
+	dec	b
+	jr	nz, cmc3
+
 	jp	start
